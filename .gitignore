@@ -1,0 +1,14 @@
+# 数据库文件 (包含个人数据，不上传)
+finance_compass.db
+
+# 自动生成的缓存文件夹
+__pycache__/
+
+# Streamlit的配置文件夹
+.streamlit/
+
+# 可视化图表文件夹（自动生成的，不是源码)
+charts/
+
+# 虚拟环境文件夹
+pj_venv/
