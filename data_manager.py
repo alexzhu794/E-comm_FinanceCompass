@@ -152,3 +152,100 @@ def CreateNewOrder(cost: float, profit: float):
     finally:
         if conn:
             conn.close()
+
+
+def logPayout(payout_date: str, original_order_date: str, amount: float):
+    """
+    (核心事务 B) 录入一笔平台回款。
+    这必须是一个原子事务：
+    1. 在 'transactions' 表创建 'PAYOUT' 收入记录。
+    2. 将 'orders' 表中所有 "对应日期" 且 "待处理" 的订单状态更新为 'PAID'。
+    """
+    print(f"正在处理一笔回款 (日期: {payout_date}, 来源: {original_order_date}, 金额: {amount})...")
+    conn = None
+
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 1. 插入 'transactions' 表 (记录银行入账)
+        c.execute(
+            "INSERT INTO transactions (date_posted, amount, type, description) VALUE (?, ?, 'PAYOUT', ?)",
+            (payout_date, amount, f"来自 {original_order_date} 订单的平台回款")
+        )
+
+        new_transaction_id = c.lastrowid   # 获取刚刚插入的 transaction_id，用于外键关联
+        print(f"入账 {amount}元 已记录 (Tx ID: {new_transaction_id})。")
+
+
+        # 2. 更新 'orders' 表状态
+        c.execute('''
+            UPDATE orders
+            SET
+                status = 'PAID',
+                payout_trans_id = ?
+            WHERE 
+                date_created = ? AND status = 'PENDING'
+            ''',
+            (new_transaction_id, original_order_date)
+        )
+
+        updated_rows = c.rowcount     # 获取上一次执行修改语句时，实际被修改的行数
+        print(f"已自动结清 {updated_rows} 笔来自 {original_order_date} 的 PENDING 订单。")
+
+        conn.commit()
+        print("回款事务已成功提交。")
+        return True
+
+    except sqlite3.Error as e:
+        print(f"录入回款时发生错误: {e}")
+        if conn:
+            conn.rollback() 
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def CancelOrders(order_id: int):
+    """
+    (核心事务 C) 取消一笔订单 (处理退款)
+    这会将其状态设为 'CANCELLED'，使其自动从未来的 "待回款" 计算中移除。
+    
+    注意：这 "不会" 自动退回垫付成本。
+    (在真实业务中，退款是一个更复杂的流程，但对本项目 "CANCELLED" 状态已足够)
+    """
+    print(f"正在尝试取消订单 ID: {order_id}...")
+    conn = None
+
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        c.execute(
+            """
+            UPDATE orders
+            SET status = 'CANCELLED'
+            WHERE order_id = ? AND status != 'CANCELLED'
+            """,
+            (order_id,)
+        )
+        
+        updated_rows = c.rowcount
+        conn.commit()
+
+        if updated_rows > 0:
+            print(f"成功：订单 {order_id} 状态已更新为 'CANCELLED'。")
+            return True
+        else:
+            print(f"警告：未找到订单 {order_id}，或该订单已是 'CANCELLED' 状态。")
+            return False
+
+    except sqlite3.Error as e:
+        print(f"取消订单时发生错误: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
