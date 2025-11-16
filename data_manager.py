@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime, timedelta
 import config
+import pandas as pd
 
 def _getdbConnect():
     """获取一个数据库连接，并启用外键约束"""
@@ -249,3 +250,23 @@ def CancelOrders(order_id: int):
     finally:
         if conn:
             conn.close()
+
+
+
+# 3. 核心工作流 (读取)
+def getCurrentBalance() -> float:     # 函数返回值类型提示（Type Hint）
+    """
+    (Query 1) 实时计算当前银行余额
+    这是 'transactions' 表中所有 'amount' 的总和。
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        c.execute("SELECT SUM(amount) FROM transactions;")
+        result = c.fetchone()       # 游标用法，获取上一次SELECT查询结果中的“第一行数据”
+
+        # 如果从未有过交易 (表为空)，fetchone() 会返回 (None,)
+        balance = result[0] if result and result[0] is not None else 0.0     
+        return float(balance)
