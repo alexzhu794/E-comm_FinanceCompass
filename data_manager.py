@@ -268,5 +268,113 @@ def getCurrentBalance() -> float:     # 函数返回值类型提示（Type Hint�
         result = c.fetchone()       # 游标用法，获取上一次SELECT查询结果中的“第一行数据”
 
         # 如果从未有过交易 (表为空)，fetchone() 会返回 (None,)
-        balance = result[0] if result and result[0] is not None else 0.0     
+        balance = result[0] if result and result[0] is not None else 0.0      # 安全处理查询结果，避免空值错误；提取总和结果，若为 None 则视为 0.0
         return float(balance)
+    
+    except sqlite3.Error as e:
+        print(f"读取银行余额时发生错误: {e}")
+        return 0.0 # 发生错误时返回 0，防止应用崩溃
+    finally:
+        if conn:
+            conn.close()
+
+
+def getAverageOrderCost() -> float:
+    """
+    (Query 3-sub) 实时计算平均垫付成本
+    只计算未被取消的订单。
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 排除 'CANCELLED' 订单，因为它们不代表真实的运营成本
+        c.execute("SELECT AVG(cost_advanced) FROM orders WHERE status != 'CANCELLED';")
+        result = c.fetchone()
+
+        average_cost = result[0] if result and result[0] is not None else 0.0
+        return float(average_cost)
+    
+    except sqlite3.Error as e:
+        print(f"读取平均成本时发生错误: {e}")
+        return 0.0
+    finally:
+        if conn:
+            conn.close()
+
+
+def getFuturePayoutSchedule() -> pd.DataFrame:
+    """
+    (Query 2) 获取未来待回款日历
+    只查询 'PENDING' 状态的订单。
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 这个查询自动忽略了 'PAID' 和 'CANCELLED' 的订单
+        query = """
+            SELECT 
+                expected_payout_date, 
+                SUM(cost_advanced + expected_profit) as daily_payout_total
+            FROM orders
+            WHERE status = 'PENDING'
+            GROUP BY expected_payout_date
+            ORDER BY expected_payout_date;
+        """
+
+        # pd.read_sql_query 是将 SQL 结果直接转为 DataFrame 的最快方式
+        df = pd.read_sql_query(query, conn)     # query 定义了 “要获取什么数据”;conn 定义了 “从哪里获取数据”
+        return df
+
+    except sqlite3.Error as e:
+        print(f"读取未来回款时发生错误: {e}")
+        return pd.DataFrame(columns=['expected_payout_date', 'daily_payout_total'])  # 返回空表
+    finally:
+        if conn:
+            conn.close()
+
+
+def getAallOrdersDF() -> pd.DataFrame:
+    """
+    获取所有订单记录，用于管理页面显示。
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 选择所有列，按创建日期倒序，最新的在最前面
+        query = "SELECT * FROM orders ORDER BY date_created DESC, order_id DESC"
+        df = pd.read_sql_query(query, conn)      
+        return df
+    
+    except sqlite3.Error as e:
+        print(f"读取所有订单时发生错误: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+
+
+def getAllTransactionsDF() -> pd.DataFrame:
+    """
+    获取所有银行流水，用于对账页面显示。
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        query = "SELECT * FROM transactions ORDER BY date_posted DESC, transaction_id DESC"
+        df = pd.read_sql_query(query, conn)
+        return df
+    
+    except sqlite3.Error as e:
+        print(f"读取所有交易时发生错误: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
