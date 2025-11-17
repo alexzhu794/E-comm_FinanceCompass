@@ -146,7 +146,7 @@ elif page == "◼️ 录入数据":
 
         if submitted_payout:
             payout_date_str = payout_date.strftime('%Y-%m-%d')
-            success = logic_driver.handle_payout(payout_date_str, amount, description)
+            success = logic_driver.HandlePayout(payout_date_str, amount, description)
             if success:
                 st.success(f"回款 ¥{amount:.2f} 已保存！请立即前往 '财务对账' 页面将其与订单关联。")
             else:
@@ -216,7 +216,7 @@ elif page == "◼️ 财务对账":
 
     with col_rec_1:
         st.subheader("1. 选择一笔 '待对账回款'")
-        unmatched_payouts_df = logic_driver.get_unmatched_payouts()
+        unmatched_payouts_df = logic_driver.getUnmatchedPayouts()
 
         if unmatched_payouts_df.empty:
             st.success("所有回款均已对账！🎉")
@@ -242,7 +242,7 @@ elif page == "◼️ 财务对账":
 
     with col_rec_2:
         st.subheader("2. 勾选对应的 '待回款订单'")
-        pending_orders_df = logic_driver.get_reconcilable_orders()
+        pending_orders_df = logic_driver.getReconcilableOrders()
 
         if pending_orders_df.empty:
             st.warning("没有 'PENDING' 状态的订单可供对账。")
@@ -277,7 +277,7 @@ elif page == "◼️ 财务对账":
             st.warning("警告：回款金额与勾选订单总额不匹配！请仔细核对。")
 
         if st.button("确认执行对账 (将订单设为 PAID)", type="primary"):
-            success = logic_driver.handle_reconciliation(selected_payout_id, selected_order_ids)
+            success = logic_driver.HandleReconciliation(selected_payout_id, selected_order_ids)
             if success:
                 st.success("对账成功！页面将刷新。")
                 st.balloons()

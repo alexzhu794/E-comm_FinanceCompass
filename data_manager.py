@@ -5,7 +5,7 @@ import pandas as pd
 
 def _getdbConnect():
     """获取一个数据库连接，并启用外键约束"""
-    conn = sqlite3.connect(DB_FILE)    
+    conn = sqlite3.connect(config.DB_FILE)    
 
     # SQLite 默认不开启外键约束，必须手动开启
     conn.execute("PRAGMA foreign_keys = ON;")   # 等同于conn.cursor().execute(...)
@@ -62,7 +62,7 @@ def init_db():
         ''')
 
         conn.commit()
-        print(f"数据库 '{DB_FILE}' 已成功初始化。 'orders' 和 'transactions' 表已准备就绪。")
+        print(f"数据库 '{config.DB_FILE}' 已成功初始化。 'orders' 和 'transactions' 表已准备就绪。")
 
     except sqlite3.Error as e:
         print(f"数据库初始化时发生错误: {e}")
@@ -123,7 +123,7 @@ def CreateNewOrder(cost: float, profit: float):
         # 准备数据
         today = datetime.now()
         today_str = today.strftime('%Y-%m-%d')
-        payout_date = (today + timedelta(days=PAYOUT_DELAY_DAYS)).strftime('%Y-%m-%d')   # timedelta时间间隔类用于计算时间差值
+        payout_date = (today + timedelta(days=config.PAYOUT_DELAY_DAYS)).strftime('%Y-%m-%d')   # timedelta时间间隔类用于计算时间差值
         cost_advanced = abs(cost)  # 确保成本是正数
         amount_out = -cost_advanced  # 交易金额是负数 (支出)
 
