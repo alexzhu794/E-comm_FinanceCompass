@@ -1,81 +1,112 @@
-# 现金流守护者 (Cash Flow Guardian) - V2
+# 现金流守护者 (Cash Flow Guardian) 
 
-本项目 (V2) 是对一个早期原型 (V1) 的**彻底架构重构**。V1 是一个功能脆弱、性能低下的“计算器”；V2 则是一个健壮、可扩展的“事务性账本”。
+这是一个基于 Streamlit 和 SQLite 事务的现金流模拟器，专为解决小型电商商家（尤其是“一件代发”模式）的核心痛点：**因平台账期导致的现金流断裂**。
 
-V2 的核心目标是解决 V1 遗留的所有根本性缺陷，为后续的复杂业务功能打下坚实的地基。
+本项目 (V3) 是对一个早期原型 (V1) 的彻底重构，旨在解决 V1 在性能、数据保真度和算法鲁棒性上的所有根本性缺陷。
 
-## V1 -> V2: 解决核心架构缺陷
+## V1 -\> V3: 架构重构
 
-V2 架构是“面试官拷打驱动开发” 的直接产物，它针对性地解决了 V1 的四大问题：
+V1 是一个脆弱的计算器，V3 是一个健壮的事务性账本。这次重构解决了 V1 的所有核心问题：
 
-| V1 缺陷 | V2 解决方案 (架构级) |
+| V1 缺陷 | V3 解决方案 (架构级) |
 | :--- | :--- |
-| **性能灾难**: 每次加载都 `O(N)` 全局重算。 | **`O(1)` 增量计算**: 采用“写入时计算”。`transactions` 表 只记录事件，余额通过 `SUM()` 实时查询，速度极快。 |
-| **数据保真度丢失**: 存储“每日汇总”，丢弃单笔订单。 | **事件溯源 (Event-Sourcing)**: `orders` 和 `transactions` 表原子化地记录每一笔“事实”。 |
-| **算法脆弱**: `900.0` 魔术数字。 | **动态推导**: “安全接单数” 直接基于 `AVG(cost_advanced)` 动态计算，可信且健壮。 |
-| **代码冗余**: `main.py` 和 `app.py` 两个入口。 | **单一入口**: 砍掉 `main.py`，100% 专注于 Streamlit Web 应用。 |
+| **性能灾难**: `O(N)` 全局重算。 | **`O(1)` 增量计算**: 采用“写入时计算”，`transactions` 表 存储原子事件，余额 `SUM()` 出来，性能瞬时。 |
+| **数据保真度丢失**: 存储“每日汇总”，丢弃单笔订单。 | **事件溯源 (Event-Sourcing)**: `orders` 和 `transactions` 表记录每一笔不可变的“事实”。 |
+| **算法脆弱**: `900.0` 魔术数字，简单 `mean()` 易被污染。 | **动态推导**: 平均成本 `AVG(cost_advanced)` 动态计算，预测更健壮。 |
+| **业务逻辑僵化**: 无法处理批量回款、提前回款。 | **人工对账 (V3)**: 引入 `'UNMATCHED'` 状态 和对账页面，完美解决真实世界难题。 |
+| **业务闭环缺失**: 无法处理退款、固定支出。 | **高级事务 (V3)**: 引入高级退款 (含运费) 和固定支出 流水，实现财务闭环。 |
 
-## V2 架构与核心设计
+## V3 架构与核心设计
 
-V2 采用了清晰的三层架构：
+V3 采用了清晰的三层架构：
 
-* **`app.py` (UI / 展示层)**：只负责“画”页面，只与“大脑”对话。
-* **`logic_driver.py` (业务层 / 大脑)**：负责业务计算、封装、协调，只与“双手”对话。
-* **`data_manager.py` (数据层 / 双手)**：包含所有 SQL 查询和事务，是唯一能碰数据库的组件。
+  * **`app.py` (UI / 展示层)**：只负责“画”页面，只与“大脑”对话。
+  * **`logic_driver.py` (业务层 / 大脑)**：负责业务计算、封装、协调，只与“双手”对话。
+  * **`data_manager.py` (数据层 / 双手)**：包含所有 SQL 查询和事务，是唯一能碰数据库的组件。
 
-### 数据库设计 (V2)
+### 数据库设计 (The "Core")
 
-V2 的核心是两张规范化的表：
+我使用两张规范化的表来构建一个“复式记账”系统：
 
 1.  **`transactions` (银行流水表)**
-    * **职责**：唯一的“资金真相”。
-    * **设计**：记录**每一笔**资金变动（`amount` 正为入，负为出）。
-    * **`type`**：`INITIAL_CAPITAL`, `ORDER_COST` (垫付成本), `PAYOUT` (回款)。
+
+      * **职责**：唯一的“资金真相”。
+      * **设计**：记录**每一笔**资金变动（`amount` 正为入，负为出）。
+      * **`type`**：`INITIAL_CAPITAL`, `ORDER_COST` (垫付成本), `PAYOUT` (回款), `COST_REFUND` (成本退回), `FIXED_EXPENSE` (固定支出)...
+      * **`reconciliation_status` (V3)**: `'UNMATCHED'` (待对账), `'MATCHED'` (已对账)。
 
 2.  **`orders` (订单状态表)**
-    * **职责**：“业务事实”的状态机。
-    * **`status` (核心)**：`PENDING`, `PAID`, `CANCELLED`。
 
-## V2 核心功能与局限
-
-V2 实现了健壮的事务逻辑，但也暴露了其业务逻辑的“天真”之处。
-
-### 功能 1: 原子事务 (`CreateNewOrder`)
-
-V2 确保了数据完整性。`CreateNewOrder` 函数被封装在一个 SQL 事务中：
-1.  `INSERT INTO orders` (创建 `PENDING` 订单)。
-2.  `INSERT INTO transactions` (扣除 `-cost` 垫付成本)。
-3.  `COMMIT` 或 `ROLLBACK` 确保了二者**要么全成功，要么全失败**。
-
-### 功能 2: 自动回款 (`logPayout`)
-
-V2 尝试自动化处理回款：
-* **逻辑**：用户在 UI 输入“到账金额”和“对应的原始订单日期 (`original_order_date`)”。
-* **后台**：`logPayout` 事务会：
-    1.  `INSERT INTO transactions` (增加 `+amount` 收入)。
-    2.  `UPDATE orders SET status='PAID' WHERE date_created = ?` (自动结清该日所有订单)。
-
-### 功能 3: 简单退款 (`CancelOrders`)
-
-V2 实现了基础的退款逻辑：
-* **逻辑**：用户在“管理”页面选择一笔订单。
-* **后台**：`CancelOrders` 函数执行 `UPDATE orders SET status='CANCELLED'`。
-* **效果**：这笔订单会**自动**从“未来待回款日历” 中消失，修正了未来的现金流预测。
-
+      * **职责**：“业务事实”的状态机。
+      * **`status` (核心)**：`PENDING`, `PAID`, `CANCELLED`。
+      * **外键**：通过 `payout_trans_id` 和 `related_order_id` 将两张表关联。
 ---
 
-## V2 的已知局限 (通往 V3 之路)
+## 功能亮点 (Showcase)
 
-V2 成功搭建了架构，但也暴露了其业务逻辑无法应对真实世界的复杂性——这些局限性**直接催生了 V3 的开发**：
+### 1\. 原子事务 (Atomicity)
 
-1.  **无法处理批量回款**：V2 的 `logPayout` 依赖“原始订单日期”，但真实世界的平台回款是**批量**的，一笔钱可能对应 5 个不同日期的订单。V2 对此无能为力。
-2.  **退款逻辑不完整**：`CancelOrders` 只更新了 `orders` 状态，但没有处理**现金流**：我的垫付成本退回来了吗？我是否承担了退货运费？V2 的账本因此会出错。
-3.  **缺少固定支出**：V2 只关心“订单”，但商家还有房租、SaaS 订阅费等**非订单**的 `FIXED_EXPENSE`。V2 没有地方记录这些，导致“实时余额” 与真实银行卡不符。
-4.  **无法处理提前回款**：如果客户提前确认收货，V2 的 `T+15` 假设就崩溃了。
+V3 的所有“写入”操作都封装在 `BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK` 中，展示了对数据完整性的掌控。
 
-V2 证明了架构的成功，V3 则是在这个架构上，实现了**完整、闭环的真实世界业务逻辑**。
+  * **`CreateNewOrder`**：原子化地 `INSERT INTO orders` (创单) 和 `INSERT INTO transactions` (扣款)，杜绝“幽灵数据”。
+  * **`CancelOrders` (V3)**：原子化地 `UPDATE orders` (改状态)，并根据逻辑 `INSERT` 成本退回 `COST_REFUND` 和运费支出 `RETURN_SHIPPING_FEE`。
 
+### 2\. 人工财务对账 (Reconciliation)
 
-## 开源许可证 (License)
+V3 解决了 V1 无法处理的 **“批量回款”** 和 **“提前回款”** 的难题。
 
-本项目采用 [MIT License](LICENSE) 开源许可证。
+1.  `logPayout` 只负责记录“银行入账”，并标记为 `'UNMATCHED'`。
+2.  "财务对账" 页面 允许用户**手动勾选**“哪笔回款 (`transactions`)” 对应“哪些订单 (`orders`)”。
+3.  `ReconcilePayoutToOrders` 事务在后台执行，将 `orders.status` 更新为 `PAID`，并将 `transactions.status` 更新为 `MATCHED`，完成闭环。
+
+### 3\. 高级 SQL (Window Functions)
+
+V3 的“余额历史图” 功能运用了高级 SQL（窗口函数）。我们不使用缓慢的 Python 循环，而是直接在数据库中计算累计和。
+
+---
+## 技术栈 (Tech Stack)
+
+  * **UI / Web 框架**: Streamlit
+  * **后端逻辑**: Python
+  * **数据库**: SQLite (通过 `sqlite3` 库进行事务控制)
+  * **数据操作**: Pandas (用于 `st.dataframe` 和图表)
+  * **配置管理**: `config.py`
+
+## 如何运行 (How to Run)
+
+1.  **克隆仓库**
+
+    ```bash
+    git clone [你的 GITHUB 仓库 URL]
+    cd [项目文件夹]
+    ```
+
+2.  **创建并激活虚拟环境**
+
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # macOS / Linux
+    .\venv\Scripts\activate   # Windows
+    ```
+
+3.  **安装依赖**
+
+    ```bash
+    # requirements.txt 应包含:
+    # streamlit
+    # pandas
+
+    pip install -r requirements.txt
+    ```
+
+4.  **运行应用**
+
+    ```bash
+    streamlit run app.py
+    ```
+
+5.  **(V3 首次运行)**
+
+      * 应用启动时会自动在本地创建 `finance_guardian.db` 数据库文件。
+      * 请先在 "◼️ 录入数据" -\> "录入启动资金" 页面为你自己注入第一笔钱。
+

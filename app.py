@@ -26,7 +26,7 @@ st.caption("一个专注于小商家现金流安全与预测的事务性模拟�
 st.sidebar.title("导航")
 page = st.sidebar.radio(
     "选择一个页面",
-    ["◼️ 仪表盘", "◼️ 录入数据", "◼️ 管理 & 对账"]
+    ["◼️ 仪表盘", "◼️ 录入数据", "◼️ 财务对账", "◼️ 管理 & 对账"]
 )
 
 
@@ -63,6 +63,29 @@ if page == "◼️ 仪表盘":
     )
 
     st.divider()
+
+    # 历史趋势图
+    st.subheader("历史趋势分析")
+
+    col_hist_1, col_hist_2 = st.columns(2)
+
+    with col_hist_1:
+        st.write("银行余额变化图")
+        balance_hist_df = logic_driver.getBalanceHistoryChartData()
+        if not balance_hist_df.empty:
+            st.line_chart(balance_hist_df.set_index('date_posted')['cumulative_balance'])
+        else:
+            st.info("尚无交易记录。")
+
+    with col_hist_2:
+        st.write("每日订单量 (F-OUT-5)")
+        order_vol_df = logic_driver.getOrderVolumeChartData()
+        if not order_vol_df.empty:
+            st.line_chart(order_vol_df.set_index('date_created')['daily_order_count'])
+        else:
+            st.info("尚无订单记录。")
+
+    st.divider() 
 
     # 1.2 获取未来回款日历
     st.subheader("未来30天待回款日历")
@@ -110,32 +133,26 @@ elif page == "◼️ 录入数据":
     st.divider()
 
     # 2.2 录入平台回款
-    with st.form("payout_form"):   
-        st.subheader("录入平台回款")
-        st.caption("这将自动在 'transactions' 表增加入账，并 '结清' (PAID) 对应日期的 PENDING 订单。")
-        
+    with st.form("payout_form"):
+        st.subheader("录入平台回款 (待对账)")
+        st.caption("您只需录入银行到账的 '总金额'。这笔钱会进入 '待对账' 列表，您需要去 '财务对账' 页面手动关联订单。")
+
         col1, col2, col3 = st.columns(3)
         payout_date = col1.date_input("回款到账日期", datetime.now())
-        # 默认回款来自 15 天前
-        default_original_date = datetime.now() - timedelta(days=data_manager.config.PAYOUT_DELAY_DAYS)
-        original_date = col2.date_input("对应的原始订单日期", default_original_date)
-        amount = col3.number_input("到账金额", min_value=0.01, format="%.2f")
-        
-        submitted_payout = st.form_submit_button("保存回款记录")
-        
+        amount = col2.number_input("到账总金额", min_value=0.01, format="%.2f")
+        description = col3.text_input("备注 (例如 '11月第1批')", "平台批量回款")
+
+        submitted_payout = st.form_submit_button("保存这笔回款 (待对账)")
+
         if submitted_payout:
-            # 将日期转换为 "YYYY-MM-DD" 字符串
             payout_date_str = payout_date.strftime('%Y-%m-%d')
-            original_date_str = original_date.strftime('%Y-%m-%d')
-            
-            # 调用 "大脑"
-            success = logic_driver.HandlePayout(payout_date_str, original_date_str, amount)
+            success = logic_driver.HandlePayout(payout_date_str, amount, description)
             if success:
-                st.success(f"回款 ¥{amount:.2f} 已保存！余额已增加，{original_date_str} 的订单已结清。")
+                st.success(f"回款 ¥{amount:.2f} 已保存！请立即前往 '财务对账' 页面将其与订单关联。")
             else:
-                st.error("保存回款失败，请检查终端日志。")
+                st.error("保存回款失败。")
     
-    st.divider()
+    st.divider()    # 用于在页面上添加分割线
 
     # 2.3 录入启动资金
     with st.form("capital_form"):
@@ -152,15 +169,129 @@ elif page == "◼️ 录入数据":
             else:
                 st.error("注入资金失败，请检查终端日志。")
 
+    st.divider()
+
+    # 2.4 录入固定支出
+    with st.form("fixed_expense_form"):
+        st.subheader("F-IN-4: 录入固定支出 (非订单)")
+        st.caption("例如：SaaS 软件费、仓储费、广告费等。这将直接从您的银行余额中扣除。")
+
+        # 从 config.py 读取模板
+        import config 
+        template_options = config.RECURRING_EXPENSE_TEMPLATES
+        selected_template = st.selectbox(
+            "选择支出模板",
+            options=template_options,
+            format_func=lambda x: f"{x['name']} (默认: ¥{x['default_amount']:.2f})"      # 显示名称和默认金额
+        )
+
+        # 如果选了 '自定义'，就用 number_input，否则用模板的默认值
+        if selected_template['name'] == '自定义支出':
+            expense_name = st.text_input("自定义支出名称", "")
+            expense_amount = st.number_input("支出金额", min_value=0.01, format="%.2f")
+        else:
+            expense_name = selected_template['name']
+            expense_amount = st.number_input("支出金额", value=selected_template['default_amount'], min_value=0.01, format="%.2f")
+
+        submitted_expense = st.form_submit_button("保存这笔支出")
+
+        if submitted_expense:
+            if not expense_name:
+                st.error("请输入支出名称。")
+            else:
+                success = logic_driver.HandleFixedExpense(expense_name, expense_amount)
+                if success:
+                    st.success(f"支出 '{expense_name}' (¥{expense_amount:.2f}) 已保存！")
+                else:
+                    st.error("保存支出失败。")
+
 
 
 # 页面三：管理 & 对账 (Manage) - (读/改)
+elif page == "◼️ 财务对账":
+    st.header("财务对账")
+    st.info("请选择一笔 '待对账回款'，并勾选这笔回款所对应的 '待回款订单'，然后点击 '执行对账'。")
+
+    col_rec_1, col_rec_2 = st.columns(2)
+
+    with col_rec_1:
+        st.subheader("1. 选择一笔 '待对账回款'")
+        unmatched_payouts_df = logic_driver.getUnmatchedPayouts()
+
+        if unmatched_payouts_df.empty:
+            st.success("所有回款均已对账！🎉")
+            st.stop()
+
+        # 让用户 "选择" 一行
+        selected_payout = st.data_editor(
+            unmatched_payouts_df,
+            column_config={"selected": st.column_config.CheckboxColumn(required=True, default=False)},
+            disabled=unmatched_payouts_df.columns.difference(["selected"]), # 只让 "selected" 可点
+            hide_index=True,
+            num_rows="dynamic"
+        )
+
+        # 获取被选中的那笔回款
+        selected_payout_row = selected_payout[selected_payout.selected]     # 过滤出被选中的行
+        if len(selected_payout_row) > 1:
+            st.warning("一次只能对账一笔回款，请只选择一行。")
+        elif len(selected_payout_row) == 1:
+            selected_payout_id = int(selected_payout_row.iloc[0]['transaction_id'])
+            selected_payout_amount = float(selected_payout_row.iloc[0]['amount'])
+            st.markdown(f"**已选择回款: `ID {selected_payout_id}` (金额: `¥{selected_payout_amount:,.2f}`)**")
+
+    with col_rec_2:
+        st.subheader("2. 勾选对应的 '待回款订单'")
+        pending_orders_df = logic_driver.getReconcilableOrders()
+
+        if pending_orders_df.empty:
+            st.warning("没有 'PENDING' 状态的订单可供对账。")
+            st.stop()
+
+        # 让用户 "勾选" 多行
+        selected_orders = st.data_editor(
+            pending_orders_df,
+            column_config={"selected": st.column_config.CheckboxColumn(default=False)},
+            hide_index=True,
+            num_rows="dynamic"
+        )
+
+        # 获取所有被勾选的订单
+        selected_orders_rows = selected_orders[selected_orders.selected]
+        if not selected_orders_rows.empty:
+            selected_order_ids = [int(x) for x in selected_orders_rows['order_id'].tolist()]
+            total_selected_amount = float(selected_orders_rows['expected_payout'].sum())
+            st.markdown(f"**已勾选 {len(selected_order_ids)} 笔订单 (总额: `¥{total_selected_amount:,.2f}`)**")
+
+    st.divider()
+
+    # 执行对账
+    if 'selected_payout_id' in locals() and 'total_selected_amount' in locals():
+        st.subheader("3. 确认并执行")
+
+        # 差额检查
+        diff = selected_payout_amount - total_selected_amount
+        st.metric("差额 (回款金额 - 勾选总额)", f"¥{diff:,.2f}")
+
+        if abs(diff) > 0.01: # 允许 1 分钱的误差
+            st.warning("警告：回款金额与勾选订单总额不匹配！请仔细核对。")
+
+        if st.button("确认执行对账 (将订单设为 PAID)", type="primary"):
+            success = logic_driver.HandleReconciliation(selected_payout_id, selected_order_ids)
+            if success:
+                st.success("对账成功！页面将刷新。")
+                st.balloons()
+                st.rerun()
+            else:
+                st.error("对账失败，请检查终端日志。")
+        
+
 elif page == "◼️ 管理 & 对账":
     st.header("订单管理 & 银行流水")
 
     # 3.1 取消订单
-    st.subheader("取消订单 (设为 'CANCELLED')")
-    st.caption("如果一笔订单退款了，请在此处将其 '取消'。它将自动从未来回款日历中移除。")
+    st.subheader("取消订单")
+    st.caption("处理退款：设置状态，并选择是否退回了垫付成本、是否由您承担退货运费。")
     
     # 调用获取所有订单供选择
     orders_df_manage = logic_driver.getAllOrders()
@@ -181,14 +312,22 @@ elif page == "◼️ 管理 & 对账":
                 # format_func 提供了更易读的选项
                 format_func=lambda x: f"ID: {x} (日期: {pending_orders.loc[pending_orders.order_id == x, 'date_created'].values[0]}, 成本: {pending_orders.loc[pending_orders.order_id == x, 'cost_advanced'].values[0]:.2f})"
             )
-            
+
+            col1, col2 = st.columns(2)
+            cost_refunded = col1.checkbox("供应商已退回垫付成本？", help="勾选此项，垫付成本将退回您的银行余额。")
+            seller_pays_shipping = col2.checkbox("您 (卖家) 承担退货运费？", help=f"勾选此项，将从余额扣除 {config.DEFAULT_RETURN_SHIPPING_FEE:.2f} 元运费。")
+                
             if st.button("确认取消这笔订单", type="primary"):
                 if order_id_to_cancel:
-                    # 调用 "大脑"
-                    success = logic_driver.HandleCancelOrder(int(order_id_to_cancel))
+                    success = logic_driver.HandleCancelOrder(
+                        int(order_id_to_cancel), 
+                        cost_refunded, 
+                        seller_pays_shipping
+                    )
+                    
                     if success:
                         st.success(f"订单 {order_id_to_cancel} 已成功设为 'CANCELLED'。")
-                        st.rerun() # 强制刷新页面以更新 selectbox
+                        st.rerun()   # 强制刷新页面以更新 selectbox
                     else:
                         st.error("取消订单失败，请检查终端日志。")
                 else:
