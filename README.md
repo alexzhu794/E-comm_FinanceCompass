@@ -4,7 +4,7 @@
 
 本项目 (V3) 是对一个早期原型 (V1) 的彻底重构，旨在解决 V1 在性能、数据保真度和算法鲁棒性上的所有根本性缺陷。
 
-## V1 -\> V3: 架构的“重生”
+## V1 -\> V3: 架构重构
 
 V1 是一个脆弱的计算器，V3 是一个健壮的事务性账本。这次重构解决了 V1 的所有核心问题：
 
@@ -52,7 +52,7 @@ V3 的所有“写入”操作都封装在 `BEGIN TRANSACTION`, `COMMIT`, `ROLLB
 
 ### 2\. 人工财务对账 (Reconciliation)
 
-V3 解决了 V1 无法处理的\*\*“批量回款”**和**“提前回款”\*\*的难题。
+V3 解决了 V1 无法处理的 **“批量回款”** 和 **“提前回款”** 的难题。
 
 1.  `logPayout` 只负责记录“银行入账”，并标记为 `'UNMATCHED'`。
 2.  "财务对账" 页面 允许用户**手动勾选**“哪笔回款 (`transactions`)” 对应“哪些订单 (`orders`)”。
@@ -60,7 +60,7 @@ V3 解决了 V1 无法处理的\*\*“批量回款”**和**“提前回款”\*
 
 ### 3\. 高级 SQL (Window Functions)
 
-V3 的“余额历史图” 功能展示了对高级 SQL（窗口函数）的掌握。我们不使用缓慢的 Python 循环，而是直接在数据库中计算累计和：
+V3 的“余额历史图” 功能运用了高级 SQL（窗口函数）。我们不使用缓慢的 Python 循环，而是直接在数据库中计算累计和：
 
 ```sql
 SELECT 
@@ -75,7 +75,7 @@ ORDER BY date_posted, transaction_id;
 ## 技术栈 (Tech Stack)
 
   * **UI / Web 框架**: Streamlit
-  * **后端逻辑**: Python 3.9+
+  * **后端逻辑**: Python
   * **数据库**: SQLite (通过 `sqlite3` 库进行事务控制)
   * **数据操作**: Pandas (用于 `st.dataframe` 和图表)
   * **配置管理**: `config.py`
@@ -100,7 +100,6 @@ ORDER BY date_posted, transaction_id;
 3.  **安装依赖**
 
     ```bash
-    # (确保你的根目录有一个 requirements.txt 文件)
     # requirements.txt 应包含:
     # streamlit
     # pandas
