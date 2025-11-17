@@ -64,6 +64,29 @@ if page == "◼️ 仪表盘":
 
     st.divider()
 
+    # 历史趋势图
+    st.subheader("历史趋势分析")
+
+    col_hist_1, col_hist_2 = st.columns(2)
+
+    with col_hist_1:
+        st.write("银行余额变化图")
+        balance_hist_df = logic_driver.getBalanceHistoryChartData()
+        if not balance_hist_df.empty:
+            st.line_chart(balance_hist_df.set_index('date_posted')['cumulative_balance'])
+        else:
+            st.info("尚无交易记录。")
+
+    with col_hist_2:
+        st.write("每日订单量 (F-OUT-5)")
+        order_vol_df = logic_driver.getOrderVolumeChartData()
+        if not order_vol_df.empty:
+            st.line_chart(order_vol_df.set_index('date_created')['daily_order_count'])
+        else:
+            st.info("尚无订单记录。")
+
+    st.divider() 
+
     # 1.2 获取未来回款日历
     st.subheader("未来30天待回款日历")
     

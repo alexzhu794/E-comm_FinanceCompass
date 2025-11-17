@@ -52,6 +52,9 @@ def init_db():
                 
                 description TEXT,
                 
+                -- 对账状态机
+                reconciliation_status TEXT DEFAULT NULL, -- NULL (不适用), 'UNMATCHED' (待对账), 'MATCHED' (已对账)
+                
                 -- 外键：用于关联 "这笔资金" 是由 "哪笔订单" 引起的
                 related_order_id INTEGER,
                 FOREIGN KEY (related_order_id) REFERENCES orders(order_id)
@@ -155,28 +158,26 @@ def CreateNewOrder(cost: float, profit: float):
             conn.close()
 
 
-def logPayout(payout_date: str, original_order_date: str, amount: float):
+def logPayout(payout_date: str, amount: float, description: str) -> bool:
     """
-    (核心事务 B) 录入一笔平台回款。
-    这必须是一个原子事务：
-    1. 在 'transactions' 表创建 'PAYOUT' 收入记录。
-    2. 将 'orders' 表中所有 "对应日期" 且 "待处理" 的订单状态更新为 'PAID'。
+    (核心事务 B) 录入一笔平台回款
+    只录入一笔回款，并将其标记为 "待对账" (UNMATCHED)
     """
-    print(f"正在处理一笔回款 (日期: {payout_date}, 来源: {original_order_date}, 金额: {amount})...")
+    print(f"正在录入一笔待对账回款 (金额: {amount})...")
     conn = None
 
     try:
         conn = _getdbConnect()
         c = conn.cursor()
 
-        # 1. 插入 'transactions' 表 (记录银行入账)
+        # 1. 只插入 'transactions' 表 (记录银行入账)
         c.execute(
-            "INSERT INTO transactions (date_posted, amount, type, description) VALUE (?, ?, 'PAYOUT', ?)",
-            (payout_date, amount, f"来自 {original_order_date} 订单的平台回款")
+            "INSERT INTO transactions (date_posted, amount, type, description, reconciliation_status) VALUES (?, ?, 'PAYOUT', ?, 'UNMATCHED')",
+            (payout_date, amount, description)
         )
 
         new_transaction_id = c.lastrowid   # 获取刚刚插入的 transaction_id，用于外键关联
-        print(f"入账 {amount}元 已记录 (Tx ID: {new_transaction_id})。")
+        print(f"回款 ¥{amount} 已入账，状态为 'UNMATCHED'")
 
 
         # 2. 更新 'orders' 表状态
@@ -435,5 +436,67 @@ def logFixedExpense(name: str, amount: float) -> bool:
         print(f"录入固定支出时发生错误: {e}")
         if conn: conn.rollback()
         return False
+    finally:
+        if conn: conn.close()
+
+
+
+# 图表
+def getOrdeVolumeHistory() -> pd.DataFrame:
+    """
+    获取每日订单量历史 (用于图表)
+    """
+    conn = None
+
+    try:
+        conn = _getdbConnect()
+        # 按创建日期统计订单数量
+        query = """
+            SELECT 
+                date_created, 
+                COUNT(order_id) as daily_order_count
+            FROM orders
+            GROUP BY date_created
+            ORDER BY date_created;
+        """
+        df = pd.read_sql_query(query, conn)
+        # 确保日期列是 datetime 类型，方便 Streamlit 绘图
+        df['date_created'] = pd.to_datetime(df['date_created'])
+        return df
+    except sqlite3.Error as e:
+        print(f"读取订单量历史时发生错误: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+
+def getBalanceHistory() -> pd.DataFrame:
+    """
+    获取银行余额历史 (用于图表)
+    (高级SQL ：使用窗口函数)
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        # SUM(amount) OVER (...) 是 SQL 窗口函数
+        # 它会计算 "截止到当前行" 的累计总和
+        query = """
+            SELECT 
+                date_posted,
+                transaction_id,
+                description,
+                amount,
+                SUM(amount) OVER (
+                    ORDER BY date_posted, transaction_id
+                ) as cumulative_balance
+            FROM transactions
+            ORDER BY date_posted, transaction_id;
+        """
+        df = pd.read_sql_query(query, conn)
+        df['date_posted'] = pd.to_datetime(df['date_posted'])
+        return df
+    except sqlite3.Error as e:
+        print(f"读取余额历史时发生错误: {e}")
+        return pd.DataFrame()
     finally:
         if conn: conn.close()

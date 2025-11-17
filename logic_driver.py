@@ -112,3 +112,15 @@ def HandleFixedExpense(name: str, amount: float) -> bool:
         print("错误：支出金额必须大于0。")
         return False
     return data_manager.logFixedExpense(name, amount)
+
+
+def getOrderVolumeChartData():
+    """(F-OUT-5) 获取订单量历史图表数据。"""
+    print("Logic Driver: 正在获取订单量历史...")
+    return data_manager.getOrdeVolumeHistory()
+
+
+def getBalanceHistoryChartData():
+    """(F-OUT-6) 获取余额历史图表数据。"""
+    print("Logic Driver: 正在获取余额历史...")
+    return data_manager.getBalanceHistory()
