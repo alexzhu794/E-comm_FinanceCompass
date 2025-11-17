@@ -1,148 +1,272 @@
-# data_manager.py (已更新)
-
 import sqlite3
+from datetime import datetime, timedelta
+import config
 import pandas as pd
-import os
 
-DB_FILE = 'finance_compass.db'
-DAILY_TABLE = 'daily_data'
-EARLY_PAYOUT_TABLE = 'early_payouts'
+def _getdbConnect():
+    """获取一个数据库连接，并启用外键约束"""
+    conn = sqlite3.connect(DB_FILE)    
+
+    # SQLite 默认不开启外键约束，必须手动开启
+    conn.execute("PRAGMA foreign_keys = ON;")   # 等同于conn.cursor().execute(...)
+    return conn
 
 
+# 1. 数据库初始化
 def init_db():
-    """初始化数据库。"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    
-    # 主数据表 (无变化)
-    c.execute(f'''
-        CREATE TABLE IF NOT EXISTS {DAILY_TABLE} (
-            Date TEXT PRIMARY KEY, Daily_Order_Count INTEGER, Total_Daily_Cost REAL,
-            Total_Daily_Profit REAL, Refunds_Received_Today REAL, 
-            Estimated_Profit_Loss_From_Refunds REAL, Other_Income_Today REAL, Notes TEXT
+    ''' 初始化数据库，创建核心的 'orders' 和 'transactions' 表 '''
+    print("正在初始化数据库...")
+    conn = None    # 确保后续 finally 块中 if conn: 的判断始终有效
+
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 订单表 (Orders Table) - 记录所有已承诺的订单
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS orders(
+                order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date_created TEXT NOT NULL,          -- 订单创建日期 (YYYY-MM-DD)
+                cost_advanced REAL NOT NULL,         -- 垫付成本
+                expected_profit REAL NOT NULL,       -- 预期利润
+                expected_payout_date TEXT NOT NULL,  -- 预期回款日
+
+                -- 核状态机
+                status TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING (待回款), PAID (已回款), CANCELLED (已退款)
+
+                -- 外键: 用于关联 "哪笔回款" 结清了 "这笔订单"
+                payout_trans_id INTEGER,
+                FOREIGN KEY (payout_trans_id) REFERENCES transactions(transaction_id)
+            )
+        ''')
+
+        # 银行流水表 (Transactions Table)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS transactions(
+                transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date_posted TEXT NOT NULL,           -- 资金变动日期
+                amount REAL NOT NULL,                -- 变动金额 (正数为入, 负数为出)
+                
+                -- 资金变动的原因
+                type TEXT NOT NULL,  -- 'INITIAL_CAPITAL', 'ORDER_COST', 'PAYOUT', 'REFUND_FEE', 'OTHER_INCOME'
+                
+                description TEXT,
+                
+                -- 外键：用于关联 "这笔资金" 是由 "哪笔订单" 引起的
+                related_order_id INTEGER,
+                FOREIGN KEY (related_order_id) REFERENCES orders(order_id)
+            )
+        ''')
+
+        conn.commit()
+        print(f"数据库 '{DB_FILE}' 已成功初始化。 'orders' 和 'transactions' 表已准备就绪。")
+
+    except sqlite3.Error as e:
+        print(f"数据库初始化时发生错误: {e}")
+
+    finally:
+        if conn:
+            conn.close()
+
+
+# 2. 核心工作流 (写入)
+def logInitCapital(amount:float):
+    '''记录启动资金'''
+    if amount <= 0:
+        print("启动资金必须大于0")
+        return                             # 无显式返回值，实际返回 None
+
+    print(f"正在录入启动资金: {amount}元...")
+    conn = None
+
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        today_str = datetime.now().strftime('%Y-%m-%d')   # 获取当前的系统日期
+
+        c.execute(
+            "INSERT INTO transactions (date_posted, amount, type, description) VALUES (?, ?, ?, ?)",
+            (today_str, amount, 'INITIAL_CAPITAL', '初始启动资金')    # 参数列表，按顺序对应替换4个？占位符
         )
-    ''')
+
+        conn.commit()
+        print("启动资金已成功录入。")
     
-    # 提前回款表 (结构重大更新)
-    c.execute(f'''
-        CREATE TABLE IF NOT EXISTS {EARLY_PAYOUT_TABLE} (
-            payout_id INTEGER PRIMARY KEY AUTOINCREMENT, -- 新增唯一ID
-            Payout_Date TEXT NOT NULL,
-            Original_Order_Date TEXT, -- 允许为空 (NULL)
-            Amount REAL NOT NULL
+    except sqlite3.Error as e:
+        print(f"录入启动资金时发生错误: {e}")
+        if conn:
+            conn.rollback()  # 回滚事务
+    finally:
+        if conn:
+            conn.close()
+
+
+def CreateNewOrder(cost: float, profit: float):
+    """
+    (核心事务 A) 录入一笔新订单。
+    这必须是一个原子事务：
+    1. 在 'orders' 表创建 'PENDING' 记录。
+    2. 在 'transactions' 表创建 'ORDER_COST' 支出记录。
+    必须同时成功，或同时失败。
+    """
+    print(f"正在处理新订单 (成本: {cost}, 利润: {profit})...")
+    conn = None
+
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 准备数据
+        today = datetime.now()
+        today_str = today.strftime('%Y-%m-%d')
+        payout_date = (today + timedelta(days=PAYOUT_DELAY_DAYS)).strftime('%Y-%m-%d')   # timedelta时间间隔类用于计算时间差值
+        cost_advanced = abs(cost)  # 确保成本是正数
+        amount_out = -cost_advanced  # 交易金额是负数 (支出)
+
+        # 开始 SQL 事务
+        # 1. 插入 'orders' 表
+        c.execute(
+            "INSERT INTO orders (date_created, cost_advanced, expected_profit, expected_payout_date, status) VALUES (?, ?, ?, ?, 'PENDING')",
+            (today_str, cost_advanced, profit, payout_date)
         )
-    ''')
-    print("数据库初始化完成，所有表已准备就绪。")
-    conn.commit()
-    conn.close()
 
-def check_date_exists(date_str):
-    """检查指定日期的数据是否已存在于主数据表中。"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(f"SELECT COUNT(1) FROM {DAILY_TABLE} WHERE Date = ?", (date_str,))
-    exists = c.fetchone()[0] > 0
-    conn.close()
-    return exists
+        new_order_id = c.lastrowid   # 获取刚刚插入的那条新订单的order_id，用于外键关联; 与orders表里的order_id字段是同一个值，只是这里为它专门做了单独标识
+                                     # c.lastrowid是SQLite3游标cursor的一个属性，专门用于获取“最近一次执行INSERT语句时生成的自增主键值”
 
-# save_daily_data 函数参数和SQL语句需要更新
-def save_daily_data(date_str, order_count, total_cost, total_profit, refunds, estimated_profit_loss_from_refunds, other_income, notes):
-    """将单日数据保存或更新到主数据表中。"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(f'''
-        INSERT OR REPLACE INTO {DAILY_TABLE} (Date, Daily_Order_Count, Total_Daily_Cost, Total_Daily_Profit, 
-                                            Refunds_Received_Today, Estimated_Profit_Loss_From_Refunds, Other_Income_Today, Notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (date_str, order_count, total_cost, total_profit, refunds, estimated_profit_loss_from_refunds, other_income, notes))
-    conn.commit()
-    conn.close()
-    print(f"日期 {date_str} 的主数据已成功保存。")
+        # 2. 插入 'transactions' 表
+        c.execute(
+            "INSERT INTO transactions (date_posted, amount, type, description, related_order_id) VALUES (?, ?, 'ORDER_COST', ?, ?)",
+            (today_str, amount_out, f"垫付订单 {new_order_id} 成本", new_order_id)
+        )
 
-# save_early_payout 参数和SQL语句需要更新
-def save_early_payout(payout_date, original_order_date, amount):
-    """保存一条提前回款记录。original_order_date 可以为 None。"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(f'''
-        INSERT INTO {EARLY_PAYOUT_TABLE} (Payout_Date, Original_Order_Date, Amount)
-        VALUES (?, ?, ?)
-    ''', (payout_date, original_order_date, amount))
-    conn.commit()
-    conn.close()
-    if original_order_date:
-        print(f"一笔来自 {original_order_date} 订单的提前回款 {amount:.2f} 元已记录在 {payout_date}。")
-    else:
-        print(f"一笔来源未知的提前回款 {amount:.2f} 元已记录在 {payout_date}。")
+        conn.commit()
+        print(f"成功：订单 {new_order_id} 已创建，成本 {amount_out} 已从银行扣除。")
+        return True       # 表示逻辑执行成功
 
-def delete_early_payout_by_id(payout_id):
-    """根据唯一的ID删除一条提前回款记录。"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(f"DELETE FROM {EARLY_PAYOUT_TABLE} WHERE payout_id = ?", (payout_id,))
-    deleted_rows = c.rowcount
-    conn.commit()
-    conn.close()
-    if deleted_rows > 0:
-        print(f"ID为 {payout_id} 的提前回款记录已删除。")
+    except sqlite3.Error as e:
+        print(f"创建新订单时发生错误: {e}")
+        if conn:
+            conn.rollback()
+        return False      # 表示逻辑执行失败
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def logPayout(payout_date: str, original_order_date: str, amount: float):
+    """
+    (核心事务 B) 录入一笔平台回款。
+    这必须是一个原子事务：
+    1. 在 'transactions' 表创建 'PAYOUT' 收入记录。
+    2. 将 'orders' 表中所有 "对应日期" 且 "待处理" 的订单状态更新为 'PAID'。
+    """
+    print(f"正在处理一笔回款 (日期: {payout_date}, 来源: {original_order_date}, 金额: {amount})...")
+    conn = None
+
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        # 1. 插入 'transactions' 表 (记录银行入账)
+        c.execute(
+            "INSERT INTO transactions (date_posted, amount, type, description) VALUE (?, ?, 'PAYOUT', ?)",
+            (payout_date, amount, f"来自 {original_order_date} 订单的平台回款")
+        )
+
+        new_transaction_id = c.lastrowid   # 获取刚刚插入的 transaction_id，用于外键关联
+        print(f"入账 {amount}元 已记录 (Tx ID: {new_transaction_id})。")
+
+
+        # 2. 更新 'orders' 表状态
+        c.execute('''
+            UPDATE orders
+            SET
+                status = 'PAID',
+                payout_trans_id = ?
+            WHERE 
+                date_created = ? AND status = 'PENDING'
+            ''',
+            (new_transaction_id, original_order_date)
+        )
+
+        updated_rows = c.rowcount     # 获取上一次执行修改语句时，实际被修改的行数
+        print(f"已自动结清 {updated_rows} 笔来自 {original_order_date} 的 PENDING 订单。")
+
+        conn.commit()
+        print("回款事务已成功提交。")
         return True
-    else:
-        print(f"未找到ID为 {payout_id} 的记录。")
+
+    except sqlite3.Error as e:
+        print(f"录入回款时发生错误: {e}")
+        if conn:
+            conn.rollback() 
         return False
-
-def load_all_early_payouts():
-    """从提前回款表加载所有数据，并确保日期列被正确转换。"""
-    if not os.path.exists(DB_FILE): return pd.DataFrame()
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        df = pd.read_sql_query(f'SELECT * FROM {EARLY_PAYOUT_TABLE}', conn)
-        if not df.empty:
-            df['Payout_Date'] = pd.to_datetime(df['Payout_Date'])
-            # Original_Order_Date 可能包含None(NaT)，所以要小心处理
-            df['Original_Order_Date'] = pd.to_datetime(df['Original_Order_Date'], errors='coerce')
-        return df
-    except Exception as e:
-        print(f"加载提前回款数据失败: {e}")
-        return pd.DataFrame()
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 
-def delete_data_by_date(date_str):
-    """根据日期删除主数据表中的一条数据。(无变化)"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(f"DELETE FROM {DAILY_TABLE} WHERE Date = ?", (date_str,))
-    conn.commit()
-    conn.close()
-    print(f"日期 {date_str} 的主数据已删除。")
+def CancelOrders(order_id: int):
+    """
+    (核心事务 C) 取消一笔订单 (处理退款)
+    这会将其状态设为 'CANCELLED'，使其自动从未来的 "待回款" 计算中移除。
+    
+    注意：这 "不会" 自动退回垫付成本。
+    (在真实业务中，退款是一个更复杂的流程，但对本项目 "CANCELLED" 状态已足够)
+    """
+    print(f"正在尝试取消订单 ID: {order_id}...")
+    conn = None
 
-def load_all_data():
-    """从主数据表加载所有历史数据到DataFrame。(无变化)"""
-    if not os.path.exists(DB_FILE): return pd.DataFrame()
-    conn = sqlite3.connect(DB_FILE)
     try:
-        df = pd.read_sql_query(f'SELECT * FROM {DAILY_TABLE}', conn)
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df.sort_values(by='Date').reset_index(drop=True)
-        return df
-    except Exception as e:
-        print(f"加载主数据失败: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+        conn = _getdbConnect()
+        c = conn.cursor()
 
-def load_all_early_payouts():
-    """从提前回款表加载所有数据到DataFrame。(无变化)"""
-    if not os.path.exists(DB_FILE): return pd.DataFrame()
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        df = pd.read_sql_query(f'SELECT * FROM {EARLY_PAYOUT_TABLE}', conn)
-        df['Payout_Date'] = pd.to_datetime(df['Payout_Date'])
-        df['Original_Order_Date'] = pd.to_datetime(df['Original_Order_Date'])
-        return df
-    except Exception as e:
-        print(f"加载提前回款数据失败: {e}")
-        return pd.DataFrame()
+        c.execute(
+            """
+            UPDATE orders
+            SET status = 'CANCELLED'
+            WHERE order_id = ? AND status != 'CANCELLED'
+            """,
+            (order_id,)
+        )
+        
+        updated_rows = c.rowcount
+        conn.commit()
+
+        if updated_rows > 0:
+            print(f"成功：订单 {order_id} 状态已更新为 'CANCELLED'。")
+            return True
+        else:
+            print(f"警告：未找到订单 {order_id}，或该订单已是 'CANCELLED' 状态。")
+            return False
+
+    except sqlite3.Error as e:
+        print(f"取消订单时发生错误: {e}")
+        if conn:
+            conn.rollback()
+        return False
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
+
+# 3. 核心工作流 (读取)
+def getCurrentBalance() -> float:     # 函数返回值类型提示（Type Hint）
+    """
+    (Query 1) 实时计算当前银行余额
+    这是 'transactions' 表中所有 'amount' 的总和。
+    """
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        c.execute("SELECT SUM(amount) FROM transactions;")
+        result = c.fetchone()       # 游标用法，获取上一次SELECT查询结果中的“第一行数据”
+
+        # 如果从未有过交易 (表为空)，fetchone() 会返回 (None,)
+        balance = result[0] if result and result[0] is not None else 0.0     
+        return float(balance)
