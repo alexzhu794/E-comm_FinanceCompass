@@ -40,6 +40,7 @@ V3 采用了清晰的三层架构：
       * **职责**：“业务事实”的状态机。
       * **`status` (核心)**：`PENDING`, `PAID`, `CANCELLED`。
       * **外键**：通过 `payout_trans_id` 和 `related_order_id` 将两张表关联。
+---
 
 ## 功能亮点 (Showcase)
 
@@ -71,7 +72,7 @@ SELECT
 FROM transactions
 ORDER BY date_posted, transaction_id;
 ```
-
+---
 ## 技术栈 (Tech Stack)
 
   * **UI / Web 框架**: Streamlit
@@ -117,3 +118,8 @@ ORDER BY date_posted, transaction_id;
 
       * 应用启动时会自动在本地创建 `finance_guardian.db` 数据库文件。
       * 请先在 "◼️ 录入数据" -\> "录入启动资金" 页面为你自己注入第一笔钱。
+
+---
+## 开源许可证 (License)
+
+本项目采用 [MIT License](LICENSE) 开源许可证。
