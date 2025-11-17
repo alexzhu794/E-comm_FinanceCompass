@@ -135,7 +135,7 @@ elif page == "◼️ 录入数据":
             else:
                 st.error("保存回款失败，请检查终端日志。")
     
-    st.divider()
+    st.divider()    # 用于在页面上添加分割线
 
     # 2.3 录入启动资金
     with st.form("capital_form"):
@@ -152,6 +152,42 @@ elif page == "◼️ 录入数据":
             else:
                 st.error("注入资金失败，请检查终端日志。")
 
+    st.divider()
+
+    # 2.4 录入固定支出
+    with st.form("fixed_expense_form"):
+        st.subheader("F-IN-4: 录入固定支出 (非订单)")
+        st.caption("例如：SaaS 软件费、仓储费、广告费等。这将直接从您的银行余额中扣除。")
+
+        # 从 config.py 读取模板
+        import config 
+        template_options = config.RECURRING_EXPENSE_TEMPLATES
+        selected_template = st.selectbox(
+            "选择支出模板",
+            options=template_options,
+            format_func=lambda x: f"{x['name']} (默认: ¥{x['default_amount']:.2f})"      # 显示名称和默认金额
+        )
+
+        # 如果选了 '自定义'，就用 number_input，否则用模板的默认值
+        if selected_template['name'] == '自定义支出':
+            expense_name = st.text_input("自定义支出名称", "")
+            expense_amount = st.number_input("支出金额", min_value=0.01, format="%.2f")
+        else:
+            expense_name = selected_template['name']
+            expense_amount = st.number_input("支出金额", value=selected_template['default_amount'], min_value=0.01, format="%.2f")
+
+        submitted_expense = st.form_submit_button("保存这笔支出")
+
+        if submitted_expense:
+            if not expense_name:
+                st.error("请输入支出名称。")
+            else:
+                success = logic_driver.HandleFixedExpense(expense_name, expense_amount)
+                if success:
+                    st.success(f"支出 '{expense_name}' (¥{expense_amount:.2f}) 已保存！")
+                else:
+                    st.error("保存支出失败。")
+
 
 
 # 页面三：管理 & 对账 (Manage) - (读/改)
@@ -159,8 +195,8 @@ elif page == "◼️ 管理 & 对账":
     st.header("订单管理 & 银行流水")
 
     # 3.1 取消订单
-    st.subheader("取消订单 (设为 'CANCELLED')")
-    st.caption("如果一笔订单退款了，请在此处将其 '取消'。它将自动从未来回款日历中移除。")
+    st.subheader("取消订单")
+    st.caption("处理退款：设置状态，并选择是否退回了垫付成本、是否由您承担退货运费。")
     
     # 调用获取所有订单供选择
     orders_df_manage = logic_driver.getAllOrders()
@@ -181,14 +217,22 @@ elif page == "◼️ 管理 & 对账":
                 # format_func 提供了更易读的选项
                 format_func=lambda x: f"ID: {x} (日期: {pending_orders.loc[pending_orders.order_id == x, 'date_created'].values[0]}, 成本: {pending_orders.loc[pending_orders.order_id == x, 'cost_advanced'].values[0]:.2f})"
             )
-            
+
+            col1, col2 = st.columns(2)
+            cost_refunded = col1.checkbox("供应商已退回垫付成本？", help="勾选此项，垫付成本将退回您的银行余额。")
+            seller_pays_shipping = col2.checkbox("您 (卖家) 承担退货运费？", help=f"勾选此项，将从余额扣除 {config.DEFAULT_RETURN_SHIPPING_FEE:.2f} 元运费。")
+                
             if st.button("确认取消这笔订单", type="primary"):
                 if order_id_to_cancel:
-                    # 调用 "大脑"
-                    success = logic_driver.HandleCancelOrder(int(order_id_to_cancel))
+                    success = logic_driver.HandleCancelOrder(
+                        int(order_id_to_cancel), 
+                        cost_refunded, 
+                        seller_pays_shipping
+                    )
+                    
                     if success:
                         st.success(f"订单 {order_id_to_cancel} 已成功设为 'CANCELLED'。")
-                        st.rerun() # 强制刷新页面以更新 selectbox
+                        st.rerun()   # 强制刷新页面以更新 selectbox
                     else:
                         st.error("取消订单失败，请检查终端日志。")
                 else:

@@ -208,44 +208,71 @@ def logPayout(payout_date: str, original_order_date: str, amount: float):
             conn.close()
 
 
-def CancelOrders(order_id: int):
+def CancelOrders(order_id: int, cost_refunded: bool, seller_pays_shipping: bool) -> bool:
     """
-    (核心事务 C) 取消一笔订单 (处理退款)
-    这会将其状态设为 'CANCELLED'，使其自动从未来的 "待回款" 计算中移除。
-    
-    注意：这 "不会" 自动退回垫付成本。
-    (在真实业务中，退款是一个更复杂的流程，但对本项目 "CANCELLED" 状态已足够)
+    (核心事务 C) 处理一笔订单的取消 (退款)。
+    这是一个事务，会：
+    1. 将 'orders' 状态设为 'CANCELLED'。
+    2. (如果 cost_refunded) 在 'transactions' 加回 "垫付成本"。
+    3. (如果 seller_pays_shipping) 在 'transactions' 扣除 "退货运费"。
     """
-    print(f"正在尝试取消订单 ID: {order_id}...")
+    print(f"正在取消订单 ID: {order_id} (成本退回: {cost_refunded}, 卖家付运费: {seller_pays_shipping})...")
     conn = None
 
     try:
         conn = _getdbConnect()
         c = conn.cursor()
 
+        # 1. 获取这笔订单的原始垫付成本
+        c.execute("SELECT cost_advanced FROM orders WHERE order_id = ?", (order_id,))
+        result = c.fetchone()
+        if not result:
+            print(f"错误：未找到订单 {order_id}。")
+            return False
+        original_cost = result[0]
+
+        # 2. 开始事务
+        c.execute("BEGIN TRANSACTION;") # 显式开启事务
+
+        # 步骤 a: 更新订单状态
         c.execute(
-            """
-            UPDATE orders
-            SET status = 'CANCELLED'
-            WHERE order_id = ? AND status != 'CANCELLED'
-            """,
+            "UPDATE orders SET status = 'CANCELLED' WHERE order_id = ?",
             (order_id,)
         )
-        
-        updated_rows = c.rowcount
-        conn.commit()
 
-        if updated_rows > 0:
-            print(f"成功：订单 {order_id} 状态已更新为 'CANCELLED'。")
-            return True
-        else:
-            print(f"警告：未找到订单 {order_id}，或该订单已是 'CANCELLED' 状态。")
-            return False
+        today_str = datetime.now().strftime('%Y-%m-%d')
+
+        # 步骤 b: (如果) 垫付成本退回
+        if cost_refunded:
+            c.execute(
+                """
+                INSERT INTO transactions (date_posted, amount, type, description, related_order_id)
+                VALUES (?, ?, 'COST_REFUND', ?, ?)
+                """,
+                (today_str, original_cost, f"订单 {order_id} 成本退回", order_id)
+            )
+
+        # 步骤 c: (如果) 卖家承担退货运费
+        if seller_pays_shipping:
+            shipping_fee = config.DEFAULT_RETURN_SHIPPING_FEE
+            c.execute(
+                """
+                INSERT INTO transactions (date_posted, amount, type, description, related_order_id)
+                VALUES (?, ?, 'RETURN_SHIPPING_FEE', ?, ?)
+                """,
+                (today_str, -abs(shipping_fee), f"订单 {order_id} 退货运费", order_id)
+            )
+
+        # 3. 提交事务
+        c.execute("COMMIT;")
+
+        print(f"成功：订单 {order_id} 已取消并处理了相关流水。")
+        return True
 
     except sqlite3.Error as e:
-        print(f"取消订单时发生错误: {e}")
+        print(f"V3 取消订单时发生错误: {e}")
         if conn:
-            conn.rollback()
+            c.execute("ROLLBACK;") # 确保回滚
         return False
     finally:
         if conn:
@@ -378,3 +405,35 @@ def getAllTransactionsDF() -> pd.DataFrame:
     finally:
         if conn:
             conn.close()
+
+
+def logFixedExpense(name: str, amount: float) -> bool:
+    """
+    录入一笔固定支出 (非订单)
+    这只会影响 'transactions' 表
+    """
+    print(f"正在录入固定支出: {name}, 金额: {amount}...")
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        today_str = datetime.now().strftime('%Y-%m-%d')     # 获取当前日期字符串
+
+        c.execute(
+            """
+            INSERT INTO transactions (date_posted, amount, type, description)
+            VALUES (?, ?, 'FIXED_EXPENSE', ?)
+            """,
+            (today_str, -abs(amount), name)   # 金额必须是负数
+            # 一笔是成本退回(正向流水)，一笔是运费支出(负向流水)，是两笔独立流水，不混合
+        )
+        conn.commit()
+        print(f"支出 {name} 已成功录入。")
+        return True
+    except sqlite3.Error as e:
+        print(f"录入固定支出时发生错误: {e}")
+        if conn: conn.rollback()
+        return False
+    finally:
+        if conn: conn.close()

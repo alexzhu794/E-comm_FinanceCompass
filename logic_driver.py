@@ -93,7 +93,7 @@ def HandlePayout(payout_date: str, original_order_date: str, amount: float) -> b
     return data_manager.logPayout(payout_date, original_order_date, amount)
 
 
-def HandleCancelOrder(order_id: int) -> bool:
+def HandleCancelOrder(order_id: int, cost_refunded: bool, seller_pays_shipping: bool) -> bool:
     """封装：取消订单"""
     print(f"Logic Driver: 正在处理取消订单 (ID: {order_id})...")
     
@@ -102,4 +102,13 @@ def HandleCancelOrder(order_id: int) -> bool:
         print("错误：订单 ID 无效。")
         return False
         
-    return data_manager.CancelOrders(order_id)
+    return data_manager.CancelOrders(order_id, cost_refunded, seller_pays_shipping)
+
+
+def HandleFixedExpense(name: str, amount: float) -> bool:
+    """(F-IN-4) 封装：录入固定支出"""
+    print(f"Logic Driver: 正在处理固定支出 {name}...")
+    if amount <= 0:
+        print("错误：支出金额必须大于0。")
+        return False
+    return data_manager.logFixedExpense(name, amount)
