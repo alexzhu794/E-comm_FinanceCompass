@@ -81,16 +81,15 @@ def HandleNewOrder(cost: float, profit: float) -> bool:
     return data_manager.CreateNewOrder(cost, profit)
 
 
-def HandlePayout(payout_date: str, original_order_date: str, amount: float) -> bool:
-    """封装：录入平台回款"""
-    print(f"Logic Driver: 正在处理回款 (金额: {amount})...")
-    
-    # 业务逻辑检查
-    if amount <= 0:
-        print("错误：回款金额必须大于0。")
+def HandlePayout(payout_date: str, amount: float, description: str) -> bool:
+    """封装：录入待对账回款"""
+    print(f"Logic Driver: 正在处理 V3 回款 (金额: {amount})...")
+    if amount <= 0: 
         return False
+    if not description: 
+        description = "平台批量回款"
         
-    return data_manager.logPayout(payout_date, original_order_date, amount)
+    return data_manager.logPayout(payout_date, amount, description)
 
 
 def HandleCancelOrder(order_id: int, cost_refunded: bool, seller_pays_shipping: bool) -> bool:
@@ -124,3 +123,23 @@ def getBalanceHistoryChartData():
     """(F-OUT-6) 获取余额历史图表数据。"""
     print("Logic Driver: 正在获取余额历史...")
     return data_manager.getBalanceHistory()
+
+
+
+def getUnmatchedPayouts():
+    """获取待对账回款"""
+    return data_manager.getUnmatchedPayouts()
+
+
+def getReconcilableOrders():
+    """获取待回款订单"""
+    return data_manager.getReconcilableOrders()
+
+
+def HandleReconciliation(payout_transaction_id: int, order_ids_list: list) -> bool:
+    """封装：执行对账"""
+    print(f"Logic Driver: 正在处理对账请求 (Payout: {payout_transaction_id})...")
+    if payout_transaction_id <= 0 or not order_ids_list:
+        print("错误：参数无效。")
+        return False
+    return data_manager.ReconcilePayoutToOrders(payout_transaction_id, order_ids_list)

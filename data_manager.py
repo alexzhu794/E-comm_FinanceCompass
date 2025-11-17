@@ -175,28 +175,8 @@ def logPayout(payout_date: str, amount: float, description: str) -> bool:
             "INSERT INTO transactions (date_posted, amount, type, description, reconciliation_status) VALUES (?, ?, 'PAYOUT', ?, 'UNMATCHED')",
             (payout_date, amount, description)
         )
-
-        new_transaction_id = c.lastrowid   # 获取刚刚插入的 transaction_id，用于外键关联
-        print(f"回款 ¥{amount} 已入账，状态为 'UNMATCHED'")
-
-
-        # 2. 更新 'orders' 表状态
-        c.execute('''
-            UPDATE orders
-            SET
-                status = 'PAID',
-                payout_trans_id = ?
-            WHERE 
-                date_created = ? AND status = 'PENDING'
-            ''',
-            (new_transaction_id, original_order_date)
-        )
-
-        updated_rows = c.rowcount     # 获取上一次执行修改语句时，实际被修改的行数
-        print(f"已自动结清 {updated_rows} 笔来自 {original_order_date} 的 PENDING 订单。")
-
         conn.commit()
-        print("回款事务已成功提交。")
+        print(f"回款 ¥{amount} 已入账，状态为 'UNMATCHED'。")
         return True
 
     except sqlite3.Error as e:
@@ -498,5 +478,88 @@ def getBalanceHistory() -> pd.DataFrame:
     except sqlite3.Error as e:
         print(f"读取余额历史时发生错误: {e}")
         return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+
+
+def getUnmatchedPayouts() -> pd.DataFrame:
+    """获取所有 '待对账' (UNMATCHED) 的回款"""
+    conn = None
+    try:
+        conn = _getdbConnect()
+        query = "SELECT * FROM transactions WHERE type = 'PAYOUT' AND reconciliation_status = 'UNMATCHED' ORDER BY date_posted DESC"
+        df = pd.read_sql_query(query, conn)
+        return df
+    except sqlite3.Error as e:
+        print(f"读取待对账回款时发生错误: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+
+def getReconcilableOrders() -> pd.DataFrame:
+    """获取所有 '待回款' (PENDING) 的订单"""
+    conn = None
+    try:
+        conn = _getdbConnect()
+        query = "SELECT order_id, date_created, cost_advanced, expected_profit, (cost_advanced + expected_profit) as expected_payout FROM orders WHERE status = 'PENDING' ORDER BY date_created"
+        df = pd.read_sql_query(query, conn)
+        return df
+    except sqlite3.Error as e:
+        print(f"读取待回款订单时发生错误: {e}")
+        return pd.DataFrame()
+    finally:
+        if conn: conn.close()
+
+
+def ReconcilePayoutToOrders(payout_transaction_id: int, order_ids_list: list) -> bool:
+    """
+    执行对账
+    将一笔 'PAYOUT' 标记为 'MATCHED'，并将其关联的 'PENDING' 订单标记为 'PAID'。
+    """
+    if not order_ids_list:
+        print("错误：对账必须至少选择一笔订单。")
+        return False
+
+    print(f"正在执行对账：将回款 {payout_transaction_id} 关联到 {len(order_ids_list)} 笔订单...")
+    conn = None
+    try:
+        conn = _getdbConnect()
+        c = conn.cursor()
+
+        c.execute("BEGIN TRANSACTION;") # 显式开启事务
+
+        # 1. 标记 'transactions' 表（指更新表中记录的状态或关联信息）
+        c.execute(
+            "UPDATE transactions SET reconciliation_status = 'MATCHED' WHERE transaction_id = ?",
+            (payout_transaction_id,)
+        )
+
+        # 2. 标记 'orders' 表
+        #    (这里用了一个小技巧， '?' 占位符列表必须是元组列表)
+        params = []
+        for order_id in order_ids_list:
+            params.append((payout_transaction_id, order_id))    # (new_payout_id, order_id_to_update)
+
+        # executemany 批量更新
+        c.executemany(
+            """
+            UPDATE orders 
+            SET status = 'PAID', payout_transaction_id = ?
+            WHERE order_id = ? AND status = 'PENDING'
+            """,
+            params
+        )
+
+        c.execute("COMMIT;")
+        print("成功：对账事务已提交。")
+        return True
+
+    except sqlite3.Error as e:
+        print(f"V3 对账事务发生错误: {e}")
+        if conn:
+            c.execute("ROLLBACK;")
+        return False
     finally:
         if conn: conn.close()
