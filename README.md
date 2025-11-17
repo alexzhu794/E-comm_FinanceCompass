@@ -61,17 +61,8 @@ V3 解决了 V1 无法处理的 **“批量回款”** 和 **“提前回款”*
 
 ### 3\. 高级 SQL (Window Functions)
 
-V3 的“余额历史图” 功能运用了高级 SQL（窗口函数）。我们不使用缓慢的 Python 循环，而是直接在数据库中计算累计和：
+V3 的“余额历史图” 功能运用了高级 SQL（窗口函数）。我们不使用缓慢的 Python 循环，而是直接在数据库中计算累计和。
 
-```sql
-SELECT 
-    date_posted,
-    SUM(amount) OVER (
-        ORDER BY date_posted, transaction_id
-    ) as cumulative_balance
-FROM transactions
-ORDER BY date_posted, transaction_id;
-```
 ---
 ## 技术栈 (Tech Stack)
 
@@ -119,7 +110,3 @@ ORDER BY date_posted, transaction_id;
       * 应用启动时会自动在本地创建 `finance_guardian.db` 数据库文件。
       * 请先在 "◼️ 录入数据" -\> "录入启动资金" 页面为你自己注入第一笔钱。
 
----
-## 开源许可证 (License)
-
-本项目采用 [MIT License](LICENSE) 开源许可证。
